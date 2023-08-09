@@ -1,0 +1,22 @@
+{
+  "name": "twitch-play-trackmania",
+  "version": "1.0.0",
+  "description": "Creates a bot listening to a twitch chat, controlling the Trackmania Car.",
+  "main": "index.js",
+  "scripts": {
+    "start": "env-cmd -f ./variables.env node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "axios": "^1.4.0",
+    "env-cmd": "^10.1.0",
+    "express": "^4.18.2",
+    "open": "^9.1.0",
+    "robotjs": "^0.6.0",
+    "tmi.js": "^1.8.5"
+  }
+}
