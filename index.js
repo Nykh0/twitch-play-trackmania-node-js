@@ -1,84 +1,90 @@
-/** 
+/**
   TWITCH PLAY TRACKMANIA
   @author : Nykho
   @helper : ex_ode
+  @helper : Eliewan
 
   Creates a bot listening to a twitch chat, controlling the Trackmania Car.
   This app must be running on the same pc where the game is installed
 
   Git related : https://github.com/Nykh0/twitch-play-trackmania
-*/ 
+*/
+import { config as configDotEnv } from 'dotenv';
 import tmi from 'tmi.js';
 import robot from 'robotjs';
 import axios from 'axios';
 import open from 'open';
 import express from 'express';
 
-/* 
+/**
+ * Populate env variables without passing them in command line
+ */
+configDotEnv();
+
+/*
   To allow the bot to create polls, we need to get authorization from twitch. As such, we get it using the Authorization code grant flow
   More info on the process here : https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#authorization-code-grant-flow
 */
 
-//We open the website to login
+// We open the website to login
 open("https://id.twitch.tv/oauth2/authorize" +
 	"?response_type=code" +
 	`&client_id=${process.env.TWITCH_CLIENT_ID}` +
 	`&redirect_uri=${process.env.TWITCH_REDIRECT_URL}` +
 	"&scope=channel:read:polls channel:manage:polls");
 
-//Creating a small web server to handle the redirect
-const app = express()
-const port = 3000
+// Creating a small web server to handle the redirect
+const app = express();
+const port = 3000;
 
-//Endpoint GET /auth/twitch/callback
+// Endpoint GET /auth/twitch/callback
 app.get('/auth/twitch/callback', (req, res) => {
-	//Getting our access token
-	axios.post('https://id.twitch.tv/oauth2/token', {
+	// Getting our access token
+	axios.post("https://id.twitch.tv/oauth2/token", {
 		client_id: process.env.TWITCH_CLIENT_ID,
 		client_secret: process.env.TWITCH_CLIENT_SECRET,
 		code: req.query.code,
 		redirect_uri: "http://localhost:3000/auth/twitch/callback",
 		grant_type: "authorization_code"
 	}).then(tokenObject => {
-		//Setting axios default headers so we don't have to worry about them anymore
-		axios.defaults.headers.common["Authorization"] = "Bearer " + tokenObject.data.access_token;
+		// Setting axios default headers so we don't have to worry about them anymore
+		axios.defaults.headers.common["Authorization"] = `Bearer ${tokenObject.data.access_token}`;
 		axios.defaults.headers.common["Client-Id"] = process.env.TWITCH_CLIENT_ID;
 		axios.defaults.headers.common["Content-Type"] = "application/json";
-		//Creating the job to validate our token hourly
+		// Creating the job to validate our token hourly
 		setInterval(() => validateAccessToken(), 3600000); // 3600000 ms = 1 hour
-		//Getting the numerical ID of the user
+		// Getting the numerical ID of the user
 		axios.get("https://api.twitch.tv/helix/users", { params: { login: process.env.TWITCH_CHANNEL_NAME } }).then(response => {
 			twitchUserId = response.data.data[0].id;
-			//We get the number of viewer to adapt the threshold of the future restart votes.
+			// We get the number of viewer to adapt the threshold of the future restart votes.
 			updateViewerCount();
-			//After that, we're starting the jobs to update the viewer count every minute and to initiliaze the vote handler.
+			// After that, we're starting the jobs to update the viewer count every minute and to initiliaze the vote handler.
 			setInterval(() => updateViewerCount(), 60000);
 			setInterval(() => handleRestarts(), 5000);
-		})
+		});
 	})
 		.catch(error => {
-			console.log(error);
-			return;
+			throw new Error(error); // We prefer to throw away the error, as all the above information is imperative.
 		});
-	res.send('You can close this window !');
-})
+	res.send("You can close this window !");
+});
 
-//App listener needed for express to work
+// App listener needed for express to work
 app.listen(port, () => {
-	console.log(`App listening on port ${port}. If the port is different than 3000, please change the redirect url in the .env file`)
-})
+	console.log(`App listening on port ${port}. If the port is different than 3000, please change the redirect url in the .env file`);
+});
 
-//////////////////////// VARIABLES ////////////////////////
+// VARIABLES
+const intervalIds = [];
+let twitchUserId = null; //Twitch numerical user ID
+let canAskForVote = true; //Bool for blocking not needed !r or !rm request
+let minimumVoteRequiredCheckpoint = 50000; // Minimum of votes required to trigger the poll to respawn at a checkpoint
+let minimumVoteRequiredMap = 50000; // Minimum of votes required to trigger the poll to restart the map
 
-var twitchUserId = null; //Twitch numerical user ID
-var canAskForVote = true; //Bool for blocking not needed !r or !rm request
-var minimumVoteRequiredCheckpoint = 50000; // Minimum of votes required to trigger the poll to respawn at a checkpoint
-var minimumVoteRequiredMap = 50000; // Minimum of votes required to trigger the poll to restart the map
-var intervalIds = [];
+// Our directions
+const DIRECTIONS = ['FORWARD', 'BACK', 'LEFT', 'RIGHT'];
 
-///////////////////////////////////////////////////////////
-
-//Creating the TMI client to connect the bot to the chat. Requires informations from the variables.env
+// Creating the TMI client to connect the bot to the chat. Requires informations from the .env
 const client = new tmi.Client({
 	options: { debug: true },
 	connection: {
@@ -92,10 +98,7 @@ const client = new tmi.Client({
 	channels: [process.env.TWITCH_CHANNEL_NAME]
 });
 
-//Our directions
-const DIRECTIONS = ['FORWARD', 'BACK', 'LEFT', 'RIGHT'];
-
-//Our data for the controls and restart votes.
+// Our data for the controls and restart votes.
 const VALUES_DATA = {
 	FORWARD: { value: 0, intervalId: null },
 	BACK: { value: 0, intervalId: null },
@@ -133,26 +136,26 @@ function updateViewerCount() {
 
 /**
  * Restart/Respawn handler
- * 
+ *
  * Every 5 seconds, check the number of !r or !rm.
  * If these number are superior to the theshold, triggers a poll.
  * If the poll succeed, the car is respawned/the map is restarted
  * If not, nothing happens
- * 
+ *
  * In each case, a timeout of 1 minute comes up once the vote is started or when a moderator respawn/restart
  */
 function handleRestarts() {
-	//Adapting treshold depending on how many people are watching
+	// Adapting treshold depending on how many people are watching
 	if (minimumVoteRequiredCheckpoint <= VALUES_DATA.RESTART.valueCheckpoint.length) {
 		resetRestartValuesAndTimeOut(60000, false);
-		//Creating poll
+		// Creating poll
 		axios.post("https://api.twitch.tv/helix/polls", {
 			broadcaster_id: twitchUserId,
 			title: "Restart at Checkpoint ? (20 seconds)",
 			choices: [{ title: "Yes" }, { title: "No" }],
 			duration: 20
 		}).then(response => {
-			setTimeout(function () {
+			setTimeout(() => {
 				//Checking result
 				axios.patch("https://api.twitch.tv/helix/polls", {
 					broadcaster_id: twitchUserId,
@@ -167,15 +170,15 @@ function handleRestarts() {
 		});
 	} else if (minimumVoteRequiredMap <= VALUES_DATA.RESTART.valueMap.length) {
 		resetRestartValuesAndTimeOut(60000, false);
-		//Creating poll
+		// Creating poll
 		axios.post("https://api.twitch.tv/helix/polls", {
 			broadcaster_id: twitchUserId,
 			title: "Restart the entire map ? (30 seconds)",
 			choices: [{ title: "Yes" }, { title: "No" }],
 			duration: 30
 		}).then(response => {
-			setTimeout(function () {
-				//Checking result
+			setTimeout(() => {
+				// Checking result
 				axios.patch("https://api.twitch.tv/helix/polls", {
 					broadcaster_id: twitchUserId,
 					id: response.data.data[0].id,
@@ -236,7 +239,7 @@ function handleKeyPress(keyName, key) {
 	VALUES_DATA[keyName].value--;
 	if (VALUES_DATA[keyName].value < 0) VALUES_DATA[keyName].value = 0
 	if (VALUES_DATA[keyName].value > 0) {
-		var newTick = process.env[keyName + "_TICK"] / VALUES_DATA[keyName].value;
+		let newTick = process.env[keyName + "_TICK"] / VALUES_DATA[keyName].value;
 		VALUES_DATA[keyName].intervalId = setInterval(() => handleKeyPress(keyName, key), newTick);
 	} else {
 		robot.keyToggle(key, 'up', 'none');
@@ -244,16 +247,16 @@ function handleKeyPress(keyName, key) {
 	}
 }
 
-//TMI connecting to Twitch
+// TMI connecting to Twitch
 client.connect();
 
-//For each messages
+// For each messages
 client.on('message', (channel, tags, message, self) => {
 	// Ignore echoed messages.
 	if (self) return;
 
 	if (!message.startsWith("!")) {
-		//Forward count
+		// Forward count
 		if (message.toLowerCase().includes('++') || message.toLowerCase().includes('fw')) {
 			if (VALUES_DATA.FORWARD.value === 0) {
 				robot.keyToggle('up', 'down', 'none');
@@ -264,7 +267,7 @@ client.on('message', (channel, tags, message, self) => {
 			if (VALUES_DATA.BACK.value > 0) VALUES_DATA.BACK.value--;
 			else VALUES_DATA.FORWARD.value++;
 		}
-		//Backward count
+		// Backward count
 		else if (message.toLowerCase().includes('--') || message.toLowerCase().includes('bw')) {
 			if (VALUES_DATA.BACK.value == 0) {
 				robot.keyToggle('down', 'down', 'none');
@@ -275,7 +278,7 @@ client.on('message', (channel, tags, message, self) => {
 			if (VALUES_DATA.FORWARD.value > 0) VALUES_DATA.FORWARD.value--;
 			else VALUES_DATA.BACK.value++;
 		}
-		//Left count
+		// Left count
 		if (message.toLowerCase().includes('<<') || message.toLowerCase().includes('left')) {
 			if (VALUES_DATA.LEFT.value == 0) {
 				robot.keyToggle('left', 'down', 'none');
@@ -286,7 +289,7 @@ client.on('message', (channel, tags, message, self) => {
 			if (VALUES_DATA.RIGHT.value > 0) VALUES_DATA.RIGHT.value--;
 			else VALUES_DATA.LEFT.value++;
 		}
-		//Right count
+		// Right count
 		else if (message.toLowerCase().includes('>>') || message.toLowerCase().includes('right')) {
 			if (VALUES_DATA.RIGHT.value == 0) {
 				robot.keyToggle('right', 'down', 'none');
@@ -298,40 +301,40 @@ client.on('message', (channel, tags, message, self) => {
 			else VALUES_DATA.RIGHT.value++;
 		}
 	} else {
-		//Check if the message comes from a mod or the broadcaster
+		// Check if the message comes from a mod or the broadcaster
 		const isAdmin = tags.mod || (tags.username.toLowerCase() === process.env.TWITCH_CHANNEL_NAME.toLowerCase());
-		//Informing the user that he can't activate the vote yet
+		// Informing the user that he can't activate the vote yet
 		if (!canAskForVote && !isAdmin && (message.toLowerCase() === "!rm" || message.toLowerCase() === "!r")) {
 			client.say(channel, `${tags.username}, you'll be able to do this command once the timeout is over.`);
 		}
-		//Respawn at checkpoint handler
+		// Respawn at checkpoint handler
 		else if (message.toLowerCase() === "!r") {
 			//If the messages comes from an admin, automatically restart at checkpoint and activate the timeout
 			if (isAdmin) {
 				robot.keyTap('pagedown');
 				resetRestartValuesAndTimeOut(60000, true);
 			}
-			//Check if the user already did the command. If not, adds his username to the array
+			// Check if the user already did the command. If not, adds his username to the array
 			 else if (!VALUES_DATA.RESTART.valueCheckpoint.includes(tags.username.toLowerCase())) {
 				VALUES_DATA.RESTART.valueCheckpoint.push(tags.username.toLowerCase());
-				var modeVotesRequired = minimumVoteRequiredCheckpoint - VALUES_DATA.RESTART.valueCheckpoint.length;
-				//Inform other users of how many votes remains.
+				let modeVotesRequired = minimumVoteRequiredCheckpoint - VALUES_DATA.RESTART.valueCheckpoint.length;
+				// Inform other users of how many votes remains.
 				if (modeVotesRequired > 0)
 					client.say(channel, `${modeVotesRequired} more votes are required to start the poll to respawn at the last checkpoint !`);
 			}
 		}
-		//Map restart handler
+		// Map restart handler
 		else if (message.toLowerCase() === "!rm") {
-			//If the messages comes from an admin, automatically restart the map and activate the timeout
+			// If the messages comes from an admin, automatically restart the map and activate the timeout
 			if (isAdmin) {
 				robot.keyTap('delete');
 				resetRestartValuesAndTimeOut(60000, true);
-			} 
-			//Check if the user already did the command. If not, adds his username to the array
+			}
+			// Check if the user already did the command. If not, adds his username to the array
 			else if (!VALUES_DATA.RESTART.valueMap.includes(tags.username.toLowerCase())) {
 				VALUES_DATA.RESTART.valueMap.push(tags.username.toLowerCase());
-				var modeVotesRequired = minimumVoteRequiredMap - VALUES_DATA.RESTART.valueMap.length;
-				//Inform other users of how many votes remains.
+				let modeVotesRequired = minimumVoteRequiredMap - VALUES_DATA.RESTART.valueMap.length;
+				// Inform other users of how many votes remains.
 				if (modeVotesRequired > 0)
 					client.say(channel, `${modeVotesRequired} more votes are required to start the poll to restart the map !`);
 			}
