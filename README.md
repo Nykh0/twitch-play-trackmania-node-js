@@ -14,12 +14,12 @@ I don't plan on updating further the bot.
 - Python (v2.7.3 recommended)
 
 # Setup
-Clone the repository then execute ```npm install```. 
+Clone the repository then execute ```npm install``` or if you have pnpm ```pnpm install```
 
 # Usage
-Open the ```variables.env``` and replace values as asked within.
+Open the ```.env.example``` ,replace values as asked within and change the name of the file in ```.env```
 
-Once it's done, execute ```npm start```.
+Once it's done, execute ```npm start``` or if you have pnpm ```pnpm install```
 
 If this is the first time you're booting the app, you'll be prompted to connect to twitch. This step is necessary as we need an authentication token for votes. You won't need to do it anymore after that while the token is valid.
 
